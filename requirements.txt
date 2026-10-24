@@ -1,5 +1,5 @@
-   opencv-python
-   numpy
-   pytesseract
-   ultralytics
-   requests
+.venv/
+.idea/
+
+model/*.pt
+model/*.onnx
