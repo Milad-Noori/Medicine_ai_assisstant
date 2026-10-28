@@ -1,58 +1,45 @@
-import cv2
-import numpy as np
+import asyncio
+import re
+import tempfile
+from pathlib import Path
 
-from pipeline.input_handler import ImageInputError, _limit_size
+import edge_tts
 
-WINDOW_NAME = "Medicine Reader"
+VOICE = "fa-IR-DilaraNeural"
+RATE = "-10%"
 
 
-def capture_from_webcam(camera_index: int = 0) -> np.ndarray:
-    backend = cv2.CAP_DSHOW if hasattr(cv2, "CAP_DSHOW") and _is_windows() else cv2.CAP_ANY
-    cap = cv2.VideoCapture(camera_index, backend)
-    if not cap.isOpened():
-        raise ImageInputError(
-            f"وبکم با شماره {camera_index} باز نشد. شماره‌ی دیگری را امتحان کنید "
-            "یا مطمئن شوید برنامه‌ی دیگری از دوربین استفاده نمی‌کند."
-        )
+class TTSError(Exception):
+    """خطای مربوط به تبدیل متن به گفتار."""
 
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
 
-    captured = None
+def _clean_for_speech(text: str) -> str:
+    text = re.sub(r"[«»\"*#_]", "", text)
+    text = re.sub(r"\s*\n\s*", ". ", text)
+    text = re.sub(r"\.\s*\.", ".", text)
+    return text.strip()
+
+
+async def _synthesize(text: str, path: str) -> None:
+    communicate = edge_tts.Communicate(text, VOICE, rate=RATE)
+    await communicate.save(path)
+
+
+def text_to_speech(text: str, output_path: str = "") -> str:
+    cleaned = _clean_for_speech(text)
+    if not cleaned:
+        raise TTSError("متنی برای تبدیل به گفتار وجود ندارد.")
+
+    if not output_path:
+        handle = tempfile.NamedTemporaryFile(suffix=".mp3", delete=False)
+        handle.close()
+        output_path = handle.name
+
     try:
-        _warm_up(cap)
-        while True:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                raise ImageInputError("خواندن تصویر از وبکم ناموفق بود.")
+        asyncio.run(_synthesize(cleaned, output_path))
+    except Exception as exc:
+        raise TTSError(f"تبدیل به گفتار ناموفق بود (اینترنت را بررسی کنید): {exc}") from exc
 
-            preview = frame.copy()
-            cv2.putText(
-                preview, "SPACE: capture | ESC/Q: cancel", (20, 40),
-                cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 255, 0), 2, cv2.LINE_AA,
-            )
-            cv2.imshow(WINDOW_NAME, preview)
-
-            key = cv2.waitKey(1) & 0xFF
-            if key == 32:
-                captured = frame
-                break
-            if key in (27, ord("q"), ord("Q")):
-                break
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-
-    if captured is None:
-        raise ImageInputError("گرفتن عکس توسط کاربر لغو شد.")
-    return _limit_size(captured)
-
-
-def _warm_up(cap: cv2.VideoCapture, frames: int = 15) -> None:
-    for _ in range(frames):
-        cap.read()
-
-
-def _is_windows() -> bool:
-    import sys
-    return sys.platform.startswith("win")
+    if not Path(output_path).is_file() or Path(output_path).stat().st_size == 0:
+        raise TTSError("فایل صوتی ساخته نشد.")
+    return output_path
